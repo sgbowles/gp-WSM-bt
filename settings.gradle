@@ -1,0 +1,2 @@
+rootProject.name='Gridpoint-WSM-bt'
+include ':app'
