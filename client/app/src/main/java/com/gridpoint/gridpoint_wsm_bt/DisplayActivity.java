@@ -1,38 +1,49 @@
 package com.gridpoint.gridpoint_wsm_bt;
 
-import android.app.ProgressDialog;
 import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.os.Bundle;
+import android.content.res.ColorStateList;
 import android.support.v7.app.AlertDialog;
 import android.support.v7.app.AppCompatActivity;
-import android.view.View;
+import android.os.Bundle;
 import android.widget.ArrayAdapter;
-import android.widget.Button;
-import android.widget.EditText;
+import android.widget.CompoundButton;
 import android.widget.Spinner;
+import android.widget.TableLayout;
+import android.widget.TextView;
+import android.widget.ToggleButton;
 
 import com.digi.xbee.api.android.XBeeBLEDevice;
 import com.digi.xbee.api.exceptions.XBeeException;
-import com.digi.xbee.api.utils.HexUtils;
+import com.digi.xbee.api.listeners.relay.IMicroPythonDataReceiveListener;
 
-public class DisplayActivity extends AppCompatActivity {
+import java.util.Date;
+import java.text.SimpleDateFormat;
+
+public class DisplayActivity extends AppCompatActivity implements IMicroPythonDataReceiveListener {
+
+    // Constants.
+    //private static final String SEPARATOR = "@@@";
+
+    private static final String MSG_ACK = "OK";
+
+    private static final int ACK_TIMEOUT = 5000;
 
     // Variables.
     private XBeeBLEDevice device;
 
-    private EditText shText;
-    private EditText slText;
-    private EditText blText;
-    private EditText niText;
-    private EditText vrText;
-    private EditText hvText;
-    private Spinner apSpinner;
-    private Spinner d9Spinner;
+    private TableLayout tableLayout;
+    private TextView messageText;
+    private TextView timeStamp;
+    private ToggleButton startButton;
+
+    private boolean ackReceived = false;
+
+    private final Object lock = new Object();
 
     private MyBroadcastReceiver myBroadcastReceiver = new MyBroadcastReceiver();
 
@@ -45,36 +56,34 @@ public class DisplayActivity extends AppCompatActivity {
         device = MainActivity.getXBeeDevice();
 
         // Initialize layout components.
-        shText = findViewById(R.id.shText);
-        slText = findViewById(R.id.slText);
-        blText = findViewById(R.id.blText);
-        niText = findViewById(R.id.niText);
-        vrText = findViewById(R.id.vrText);
-        hvText = findViewById(R.id.hvText);
+        tableLayout = findViewById(R.id.tableLayout);
+        messageText = findViewById(R.id.messageText);
+        timeStamp = findViewById(R.id.timeStamp);
 
-        apSpinner = findViewById(R.id.apSpinner);
-        ArrayAdapter<CharSequence> adapter = ArrayAdapter.createFromResource(this, R.array.ap_values, android.R.layout.simple_spinner_item);
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        apSpinner.setAdapter(adapter);
-
-        d9Spinner = findViewById(R.id.d9Spinner);
-        adapter = ArrayAdapter.createFromResource(this, R.array.d9_values, android.R.layout.simple_spinner_item);
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        d9Spinner.setAdapter(adapter);
-
-        Button readButton = findViewById(R.id.readButton);
-        readButton.setOnClickListener(new View.OnClickListener() {
+        startButton = findViewById(R.id.startButton);
+        startButton.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override
-            public void onClick(View view) {
-                readSettings();
-            }
-        });
-
-        Button writeButton = findViewById(R.id.writeButton);
-        writeButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                writeSettings();
+            public void onCheckedChanged(CompoundButton compoundButton, final boolean checked) {
+                // Send a message to the MicroPython interface with the action and refresh time.
+                final String data = checked ? "ON" : "OFF";
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            boolean ackReceived = sendDataAndWaitResponse(data.getBytes());
+                            if (ackReceived) {
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        tableLayout.setAlpha(checked ? 1 : (float) 0.2);
+                                    }
+                                });
+                            }
+                        } catch (XBeeException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }).start();
             }
         });
     }
@@ -83,6 +92,9 @@ public class DisplayActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
 
+        // Register a MicroPython data listener.
+        device.addMicroPythonDataListener(this);
+
         // Register a receiver to be notified when the Bluetooth connection is lost.
         registerReceiver(myBroadcastReceiver, new IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED));
     }
@@ -90,6 +102,9 @@ public class DisplayActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+
+        // Unregister a MicroPython data listener.
+        device.removeMicroPythonDataListener(this);
 
         // Unregister the the Bluetooth connection lost receiver.
         unregisterReceiver(myBroadcastReceiver);
@@ -109,95 +124,88 @@ public class DisplayActivity extends AppCompatActivity {
                 .show();
     }
 
-    /**
-     * Reads all the settings and updates their values in the UI.
-     */
-    private void readSettings() {
-        startOperation(true);
-    }
-
-    /**
-     * Writes all the settings with their new values.
-     */
-    private void writeSettings() {
-        startOperation(false);
-    }
-
-    /**
-     * Starts the read or write operation.
-     *
-     * @param read {@code true} to start the read operation, {@code false} to
-     *             start the write operation.
-     */
-    private void startOperation(final boolean read) {
-        // Clear the focus of all components.
-        clearFocus();
-
-        // Show a progress dialog while performing the operation.
-        final ProgressDialog dialog = ProgressDialog.show(this, getResources().getString(read ? R.string.reading_settings_title : R.string.writing_settings_title),
-                getResources().getString(read ? R.string.reading_settings_description : R.string.writing_settings_description), true);
-
-        // The read/write process blocks the UI interface, so it must be done in a different thread.
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    if (read) {
-                        // Read the values.
-                        final byte[] shValue = device.getParameter("SH");
-                        final byte[] slValue = device.getParameter("SL");
-                        final byte[] blValue = device.getParameter("BL");
-                        final byte[] niValue = device.getParameter("NI");
-                        final byte[] apValue = device.getParameter("AP");
-                        final byte[] d9Value = device.getParameter("D9");
-                        final byte[] vrValue = device.getParameter("VR");
-                        final byte[] hvValue = device.getParameter("HV");
-
-                        // Set the values in the UI.
-                        runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                shText.setText(HexUtils.byteArrayToHexString(shValue));
-                                slText.setText(HexUtils.byteArrayToHexString(slValue));
-                                blText.setText(HexUtils.byteArrayToHexString(blValue));
-                                niText.setText(new String(niValue));
-                                apSpinner.setSelection(Integer.parseInt(HexUtils.byteArrayToHexString(apValue)));
-                                d9Spinner.setSelection(Integer.parseInt(HexUtils.byteArrayToHexString(d9Value)));
-                                vrText.setText(HexUtils.byteArrayToHexString(vrValue));
-                                hvText.setText(HexUtils.byteArrayToHexString(hvValue));
-                            }
-                        });
-                    } else {
-                        // Write the values.
-                        device.setParameter("NI", niText.getText().toString().getBytes());
-                        device.setParameter("AP", HexUtils.hexStringToByteArray(apSpinner.getSelectedItem().toString().split(" ")[0]));
-                        device.setParameter("D9", HexUtils.hexStringToByteArray(d9Spinner.getSelectedItem().toString().split(" ")[0]));
-                    }
-                } catch (final XBeeException e) {
-                    e.printStackTrace();
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            new AlertDialog.Builder(DisplayActivity.this).setTitle(getResources().getString(R.string.error_performing_operation))
-                                    .setMessage(e.getMessage())
-                                    .setPositiveButton(android.R.string.ok, null)
-                                    .show();
-                        }
-                    });
-                }
-                // Close the dialog.
-                dialog.dismiss();
+    @Override
+    public void dataReceived(byte[] data) {
+        // If the response is "OK", notify the lock to continue the process.
+        if (new String(data).equals(MSG_ACK)) {
+            ackReceived = true;
+            synchronized (lock) {
+                lock.notify();
             }
-        }).start();
+        } else {
+            // If the process is stopped, do nothing.
+            if (!startButton.isChecked())
+                return;
+
+            // Get the temperature and humidity from the received data.
+            //String[] dataString = new String(data).split(SEPARATOR);
+            //if (dataString.length != 2)
+                //return;
+
+            final String message = new String(data);
+            final ColorStateList oldColors = messageText.getTextColors();
+
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    //Set timestamp
+                    String timeStampString = new SimpleDateFormat("yyyy.MM.dd.HH.mm.ss").format(new Date());
+                    timeStamp.setText(timeStampString);
+                    // Update the message.
+                    messageText.setText(message);
+                    // Make the texts blink for a short time.
+                    messageText.setTextColor(getResources().getColor(R.color.colorAccent));
+                }
+            });
+
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException ignore) {
+            }
+
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    messageText.setTextColor(oldColors);
+                }
+            });
+        }
     }
 
     /**
-     * Clears the focus of all elements.
+     * Sends the given data and waits for an ACK response during the configured
+     * timeout.
+     *
+     * @param data Data to send.
+     *
+     * @return {@code true} if the ACK was received, {@code false} otherwise.
+     *
+     * @throws XBeeException if there is any problem sending the data.
      */
-    private void clearFocus() {
-        niText.clearFocus();
-        apSpinner.clearFocus();
-        d9Spinner.clearFocus();
+    private boolean sendDataAndWaitResponse(byte[] data) throws XBeeException {
+        ackReceived = false;
+        // Send the data.
+        device.sendMicroPythonData(data);
+        // Wait until the ACK is received to send the next block.
+        try {
+            synchronized (lock) {
+                lock.wait(ACK_TIMEOUT);
+            }
+        } catch (InterruptedException ignore) {}
+        // If the ACK was not received, show an error.
+        if (!ackReceived) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    new AlertDialog.Builder(DisplayActivity.this).setTitle(getResources().getString(R.string.error_waiting_response_title))
+                            .setMessage(getResources().getString(R.string.error_waiting_response_description))
+                            .setPositiveButton(android.R.string.ok, null)
+                            .show();
+                }
+            });
+            return false;
+        }
+        return true;
     }
 
     /**
