@@ -253,7 +253,9 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         }).start();
+
     }
+
 
     /**
      * Custom adapter class to represent the Bluetooth device items in the list.

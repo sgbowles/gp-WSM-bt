@@ -24,6 +24,8 @@ import com.digi.xbee.api.listeners.relay.IMicroPythonDataReceiveListener;
 import java.util.Date;
 import java.text.SimpleDateFormat;
 
+import static com.gridpoint.gridpoint_wsm_bt.R.id.tableLayout;
+
 public class DisplayActivity extends AppCompatActivity implements IMicroPythonDataReceiveListener {
 
     // Constants.
